@@ -1,5 +1,5 @@
 // Flashmap service worker : lancement instantané + carte disponible hors ligne
-const SHELL_CACHE = 'fm-shell-v1';
+const SHELL_CACHE = 'fm-shell-v2';
 const STYLE_CACHE = 'fm-style';
 const TILE_CACHE = 'fm-tiles';
 const MAX_TILES = 5000;
