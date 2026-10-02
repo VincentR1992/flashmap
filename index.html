@@ -1,0 +1,1051 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Flashmap">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff">
+<title>Flashmap</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
+<link rel="stylesheet" href="maplibre-gl.css">
+<script>
+  // Lecture des données locales lancée tout de suite, en parallèle du chargement de la carte.
+  window.__stateP = new Promise(function (res) {
+    try {
+      var r = indexedDB.open('flashmap', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('kv'); };
+      r.onsuccess = function () {
+        window.__db = r.result;
+        var g = r.result.transaction('kv').objectStore('kv').get('state');
+        g.onsuccess = function () { res(g.result || null); };
+        g.onerror = function () { res(null); };
+      };
+      r.onerror = function () { res(null); };
+    } catch (e) { res(null); }
+  });
+</script>
+<style>
+  :root {
+    --ink: #17203A; --ink-2: #5B6480; --paper: #FFFFFF; --mist: #F3F5F9; --grout: #DDE2EB;
+    --cobalt: #2F4BFF; --cobalt-ink: #FFFFFF; --danger: #D7263D;
+    --shadow: 0 1px 0 rgba(23,32,58,.06), 0 10px 30px rgba(23,32,58,.16);
+    --st: env(safe-area-inset-top, 0px); --sb: env(safe-area-inset-bottom, 0px);
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #EEF1F8; --ink-2: #9AA3BD; --paper: #1B2131; --mist: #252C3F; --grout: #353D54;
+      --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.45); }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #E9ECF2; color: var(--ink);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif; }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--cobalt); outline-offset: 2px; }
+  #map { position: fixed; inset: 0; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+  /* Barre du haut */
+  #top { position: fixed; top: calc(var(--st) + 10px); left: 10px; right: 10px; z-index: 5; pointer-events: none;
+    display: flex; flex-direction: column; gap: 8px; }
+  .bar { max-width: 720px; }
+  .bar { pointer-events: auto; display: flex; align-items: center; gap: 6px; background: var(--paper);
+    border-radius: 14px; box-shadow: var(--shadow); padding: 5px 5px 5px 8px; }
+  .logo { width: 34px; height: 34px; border-radius: 9px; background: var(--cobalt); display: grid; place-items: center; flex: none; }
+  .logo canvas { width: 22px; height: 14px; image-rendering: pixelated; }
+  #q { flex: 1; min-width: 0; border: 0; background: transparent; padding: 8px 6px; outline: none; font-size: 16px; }
+  #q::placeholder { color: var(--ink-2); }
+  .icon-btn { position: relative; width: 40px; height: 40px; border: 0; border-radius: 10px; background: transparent;
+    display: grid; place-items: center; flex: none; }
+  .icon-btn:hover { background: var(--mist); }
+  .icon-btn svg { width: 22px; height: 22px; }
+  #syncDot { position: absolute; top: 7px; right: 7px; width: 9px; height: 9px; border-radius: 50%;
+    border: 2px solid var(--paper); background: transparent; }
+  #syncDot[data-s="ok"] { background: #22B35E; }
+  #syncDot[data-s="pending"], #syncDot[data-s="busy"] { background: #F2A007; }
+  #syncDot[data-s="error"] { background: var(--danger); }
+
+  #results { pointer-events: auto; background: var(--paper); border-radius: 14px; box-shadow: var(--shadow);
+    overflow: hidden; max-height: 50vh; overflow-y: auto; }
+  #results button { display: flex; width: 100%; gap: 10px; align-items: center; text-align: left; border: 0;
+    background: none; padding: 10px 14px; border-bottom: 1px solid var(--grout); }
+  #results button:last-child { border-bottom: 0; }
+  #results button:hover { background: var(--mist); }
+  #results small { display: block; color: var(--ink-2); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #results .empty { padding: 12px 14px; color: var(--ink-2); }
+
+  /* Filtres par tag */
+  #chips { pointer-events: auto; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 2px 2px 6px;
+    margin: 0 -10px; padding-left: 10px; padding-right: 10px; }
+  #chips::-webkit-scrollbar { display: none; }
+  .chip { flex: none; display: inline-flex; align-items: center; gap: 7px; border: 0; background: var(--paper);
+    border-radius: 9px; padding: 7px 11px 7px 8px; box-shadow: 0 1px 2px rgba(23,32,58,.12), 0 4px 12px rgba(23,32,58,.10);
+    font-size: 14px; font-weight: 600; white-space: nowrap; }
+  .chip span { font-weight: 500; color: var(--ink-2); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .chip[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+  .chip[aria-pressed="true"] span { color: inherit; opacity: .7; }
+  .chip.all { padding-left: 11px; }
+  .sw { width: 14px; height: 14px; border-radius: 3.5px; background: var(--c); flex: none;
+    box-shadow: inset 0 -2px 0 rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.45); }
+  .chip[aria-pressed="true"] .sw { outline: 2px solid var(--paper); outline-offset: 0; }
+
+  /* Boutons flottants */
+  #fab { position: fixed; right: 10px; bottom: calc(var(--sb) + 34px); z-index: 4; display: flex; flex-direction: column; gap: 8px; }
+  #fab button { width: 46px; height: 46px; border: 0; border-radius: 12px; background: var(--paper); box-shadow: var(--shadow);
+    display: grid; place-items: center; }
+  #fab button svg { width: 22px; height: 22px; }
+  #fab button[aria-pressed="true"] { background: var(--cobalt); color: var(--cobalt-ink); }
+
+  /* Panneau (POI, nouveau POI, réglages) */
+  #sheet { position: fixed; z-index: 8; left: 0; right: 0; bottom: 0; background: var(--paper); color: var(--ink);
+    border-radius: 20px 20px 0 0; box-shadow: 0 -8px 40px rgba(23,32,58,.22);
+    padding: 8px 18px calc(var(--sb) + 18px); max-height: 78vh; overflow-y: auto; overscroll-behavior: contain;
+    animation: up .22s cubic-bezier(.2,.9,.3,1); }
+  #sheet.tall { max-height: calc(100vh - var(--st) - 20px); }
+  #sheet[hidden] { display: none; }
+  @keyframes up { from { transform: translateY(30px); opacity: 0; } }
+  .grab { width: 38px; height: 5px; border-radius: 3px; background: var(--grout); margin: 0 auto 10px; }
+  .sh-head { display: flex; align-items: flex-start; gap: 8px; }
+  .sh-head .title { flex: 1; min-width: 0; }
+  .name-in { width: 100%; border: 0; background: transparent; font-size: 22px; font-weight: 750; padding: 2px 0;
+    letter-spacing: -.01em; outline: none; border-bottom: 2px solid transparent; }
+  .name-in:focus { border-bottom-color: var(--cobalt); }
+  .meta { color: var(--ink-2); font-size: 13px; margin: 2px 0 0; }
+  .meta button { border: 0; background: none; padding: 0; color: inherit; text-decoration: underline dotted; font-variant-numeric: tabular-nums; }
+  .close { width: 34px; height: 34px; border: 0; border-radius: 50%; background: var(--mist); display: grid; place-items: center; flex: none; }
+  .tagpick { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0; }
+  .tchip { display: inline-flex; align-items: center; gap: 7px; border: 1.5px solid var(--grout); background: var(--paper);
+    border-radius: 9px; padding: 6px 10px 6px 7px; font-size: 14px; font-weight: 600; }
+  .tchip[aria-pressed="true"] { border-color: var(--c); background: color-mix(in srgb, var(--c) 16%, var(--paper)); }
+  .tchip:not([aria-pressed="true"]) .sw { opacity: .45; }
+  .row { display: flex; gap: 8px; }
+  .btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 12px;
+    padding: 12px 14px; font-weight: 650; background: var(--mist); text-decoration: none; color: var(--ink); }
+  .btn svg { width: 19px; height: 19px; }
+  .btn.primary { background: var(--cobalt); color: var(--cobalt-ink); }
+  .btn.danger { color: var(--danger); background: transparent; flex: none; padding-inline: 8px; }
+  .btn:disabled { opacity: .5; }
+  .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; color: var(--ink-2); font-size: 13px; }
+
+  /* Réglages */
+  .set h2 { font-size: 22px; margin: 2px 0 6px; letter-spacing: -.01em; }
+  .set h3 { font-size: 15px; margin: 22px 0 8px; }
+  .set p { margin: 4px 0 10px; color: var(--ink-2); font-size: 14px; max-width: 60ch; }
+  .field { display: block; margin: 0 0 8px; }
+  .field span { display: block; font-size: 13px; color: var(--ink-2); margin-bottom: 3px; }
+  .field input, .add-tag input { width: 100%; border: 1.5px solid var(--grout); background: var(--paper); border-radius: 10px; padding: 9px 11px; font-size: 16px; }
+  .field input:focus, .add-tag input:focus, .tagrow input[type=text]:focus { border-color: var(--cobalt); outline: none; }
+  .status { font-size: 14px; padding: 9px 11px; border-radius: 10px; background: var(--mist); margin: 8px 0; }
+  .status.err { color: var(--danger); }
+  .tagrow { display: flex; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--grout); }
+  .tagrow input[type=color] { width: 34px; height: 34px; border: 0; padding: 0; background: none; border-radius: 8px; flex: none; }
+  .tagrow input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+  .tagrow input[type=color]::-webkit-color-swatch { border: 0; border-radius: 8px; box-shadow: inset 0 -2px 0 rgba(0,0,0,.2); }
+  .tagrow input[type=text] { flex: 1; min-width: 0; border: 1.5px solid transparent; background: transparent; border-radius: 8px; padding: 7px 8px; font-size: 16px; font-weight: 600; }
+  .tagrow small { color: var(--ink-2); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+  .mini { width: 32px; height: 32px; border: 0; border-radius: 8px; background: var(--mist); display: grid; place-items: center; flex: none; }
+  .mini:disabled { opacity: .35; }
+  .mini svg { width: 16px; height: 16px; }
+  .mini.del { color: var(--danger); background: transparent; }
+  .add-tag { display: flex; gap: 8px; margin-top: 10px; }
+  .add-tag .btn { flex: none; }
+  .seg { display: inline-flex; background: var(--mist); border-radius: 10px; padding: 3px; }
+  .seg button { border: 0; background: transparent; border-radius: 8px; padding: 7px 12px; font-weight: 600; }
+  .seg button[aria-pressed="true"] { background: var(--paper); box-shadow: 0 1px 3px rgba(23,32,58,.15); }
+  .stack { display: flex; flex-direction: column; gap: 8px; }
+
+  /* Épingle sélectionnée (déplaçable) */
+  .selpin { cursor: grab; z-index: 3; touch-action: none; }
+  .selpin .in { transform-origin: 50% 100%; animation: pop .28s cubic-bezier(.3,1.6,.5,1); transition: transform .15s; }
+  .selpin canvas { display: block; width: 46px; height: 59px; }
+  .selpin.lift { cursor: grabbing; }
+  .selpin.lift .in { transform: translateY(-10px) scale(1.08); }
+  @keyframes pop { from { transform: translateY(-14px) scale(.7); } }
+  .me { width: 18px; height: 18px; border-radius: 50%; background: #1E88FF; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(30,136,255,.22), 0 2px 6px rgba(0,0,0,.3); }
+  .ripple { position: fixed; z-index: 6; width: 70px; height: 70px; margin: -35px 0 0 -35px; border-radius: 50%;
+    border: 3px solid var(--cobalt); pointer-events: none; animation: rip .5s ease-out forwards; }
+  @keyframes rip { from { transform: scale(.2); opacity: 1; } to { transform: scale(1.2); opacity: 0; } }
+
+  #toast { position: fixed; z-index: 9; left: 50%; bottom: calc(var(--sb) + 24px); transform: translateX(-50%);
+    background: var(--ink); color: var(--paper); border-radius: 12px; padding: 11px 14px; box-shadow: var(--shadow);
+    display: flex; gap: 14px; align-items: center; max-width: calc(100vw - 24px); font-size: 14px; animation: up .2s; }
+  #toast[hidden] { display: none; }
+  body.sheet-open #toast { bottom: auto; top: calc(var(--st) + 112px); }
+  #toast button { border: 0; background: none; color: #9DB0FF; font-weight: 700; padding: 0; }
+  @media (prefers-color-scheme: dark) { #toast button { color: var(--cobalt); } }
+
+  .maplibregl-ctrl-attrib { font-size: 10px; }
+  .maplibregl-ctrl-bottom-right { bottom: var(--sb); }
+
+  @media (min-width: 760px) {
+    #sheet { left: 12px; right: auto; bottom: 12px; width: 390px; border-radius: 18px; max-height: calc(100vh - 150px); padding-bottom: 18px; }
+    #sheet.tall { width: 440px; }
+    #toast { left: auto; right: 70px; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<header id="top">
+  <div class="bar">
+    <div class="logo" aria-hidden="true"><canvas id="logo" width="11" height="7"></canvas></div>
+    <input id="q" type="search" placeholder="Chercher un POI" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Chercher un POI par son nom">
+    <button id="btnSettings" class="icon-btn" aria-label="Réglages, tags et synchronisation">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
+      <span id="syncDot"></span>
+    </button>
+  </div>
+  <div id="results" hidden></div>
+  <nav id="chips" aria-label="Filtrer par tag"></nav>
+</header>
+
+<div id="fab">
+  <button id="btnSat" aria-pressed="false" aria-label="Vue satellite">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>
+  </button>
+  <button id="btnLocate" aria-pressed="false" aria-label="Ma position">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+  </button>
+</div>
+
+<section id="sheet" hidden aria-live="polite"></section>
+<div id="toast" hidden role="status"></div>
+<input id="fileIn" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden>
+
+<script src="maplibre-gl.js"></script>
+<script>
+'use strict';
+/* ================================================================
+   Flashmap — carte de POI personnelle, synchronisée via GitHub
+   ================================================================ */
+const STYLE_URL = 'https://tiles.openfreemap.org/styles/positron';
+const SAT_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const DATA_FILE = 'flashmap-data.json';
+const ZPIN = 12;           // en dessous : points colorés, au-dessus : épingles avec picto
+const DEFAULT_TAG = 'a flasher';
+const NO_TAG_COLOR = '8a90a6';
+const ALIEN = ['...XXXXX...', '.XXXXXXXXX.', 'XX..XXX..XX', 'XXXXXXXXXXX', '..XX...XX..', '.XX.XXX.XX.', 'XX.......XX'];
+const PALETTE = ['#2F4BFF', '#E8336D', '#14B8A6', '#F59E0B', '#8B5CF6', '#EF4444', '#10B981', '#0EA5E9', '#F97316', '#64748B'];
+const KNOWN_ORDER = { 'detruit': 0, 'ok': 1, 'a nettoyer': 2, 'a flasher': 3, 'a essayer': 4, 'saved': 5, 'flashe': 6 };
+
+const $ = s => document.querySelector(s);
+const now = () => Date.now();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const norm = s => (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+const esc = s => (s || '').toString().replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const r6 = v => Math.round(v * 1e6) / 1e6;
+const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+function uid() {
+  const a = new Uint8Array(8); crypto.getRandomValues(a);
+  return Array.from(a, b => (b % 36).toString(36)).join('') + (now() % 46656).toString(36);
+}
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem('fm.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('fm.' + k, JSON.stringify(v)); } catch (e) {} },
+  del(k) { try { localStorage.removeItem('fm.' + k); } catch (e) {} }
+};
+const ICONS = {
+  close: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  walk: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="2"/><path d="m9 21 2-6 3 3v3M7 12l3-4 4 1 2 3h3M10 8l1 7"/></svg>',
+  car: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 16V11l2-5h10l2 5v5M3 16h18v3H3zM5 11h14"/><circle cx="7.5" cy="16" r="1"/><circle cx="16.5" cy="16" r="1"/></svg>',
+  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 15 6-6 6 6"/></svg>',
+  down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>'
+};
+
+/* ---------------- État & stockage local ---------------- */
+let S = { tags: {}, pois: {}, del: {} };
+const filter = new Set();
+let filterTouched = false;
+let sel = null;               // id du POI sélectionné
+let map, src;
+
+function saveLocal() {
+  clearTimeout(saveLocal.t);
+  saveLocal.t = setTimeout(() => {
+    try { window.__db && window.__db.transaction('kv', 'readwrite').objectStore('kv').put(S, 'state'); } catch (e) { console.warn(e); }
+  }, 250);
+}
+function commit() { saveLocal(); render(); scheduleSync(); }
+function tagList() { return Object.values(S.tags).sort((a, b) => a.o - b.o || a.name.localeCompare(b.name)); }
+function tagByNorm(name) { const n = norm(name); return Object.values(S.tags).find(t => norm(t.name) === n); }
+function hex(c) { return (c || '').replace('#', '').toLowerCase(); }
+function poiColors(p) {
+  const ts = p.t.map(id => S.tags[id]).filter(Boolean).sort((a, b) => a.o - b.o);
+  return ts.length ? ts.map(t => hex(t.color)) : [NO_TAG_COLOR];
+}
+function iconKey(cols) { return 'p-' + cols.slice(0, 4).join('-'); }
+
+/* ---------------- Dessin des épingles ---------------- */
+function lum(h) { const n = parseInt(h, 16); return (0.2126 * (n >> 16 & 255) + 0.7152 * (n >> 8 & 255) + 0.0722 * (n & 255)) / 255; }
+function rr(x, X, Y, w, h, r) { x.beginPath(); x.moveTo(X + r, Y); x.arcTo(X + w, Y, X + w, Y + h, r); x.arcTo(X + w, Y + h, X, Y + h, r); x.arcTo(X, Y + h, X, Y, r); x.arcTo(X, Y, X + w, Y, r); x.closePath(); }
+const PR = Math.min(3, Math.max(2, Math.ceil(window.devicePixelRatio || 2)));
+function drawPin(cols, s = PR) {
+  const W = 36, H = 46, c = document.createElement('canvas');
+  c.width = W * s; c.height = H * s;
+  const x = c.getContext('2d'); x.scale(s, s);
+  x.fillStyle = 'rgba(23,32,58,.28)'; x.beginPath(); x.ellipse(18, 43.6, 5.5, 2, 0, 0, Math.PI * 2); x.fill();
+  x.beginPath(); x.moveTo(18, 43); x.bezierCurveTo(14, 36, 4, 29, 4, 18); x.arc(18, 18, 14, Math.PI, 0); x.bezierCurveTo(32, 29, 22, 36, 18, 43); x.closePath();
+  x.fillStyle = '#' + cols[0]; x.fill();
+  x.lineWidth = 2.2; x.strokeStyle = '#fff'; x.stroke();
+  // reflet façon carreau de mosaïque
+  x.save(); x.clip(); x.fillStyle = 'rgba(255,255,255,.16)'; x.fillRect(0, 0, 36, 13); x.restore();
+  const ink = lum(cols[0]) > 0.62 ? '#17203A' : '#FFFFFF', px = 1.75, ox = 18 - 11 * px / 2, oy = 18.5 - 7 * px / 2;
+  x.fillStyle = ink;
+  ALIEN.forEach((row, j) => { for (let i = 0; i < row.length; i++) if (row[i] === 'X') x.fillRect(ox + i * px, oy + j * px, px + .06, px + .06); });
+  cols.slice(1, 4).forEach((cc, k) => {
+    const tx = 27, ty = 1 + k * 7.6;
+    x.fillStyle = '#fff'; rr(x, tx - 1.2, ty - 1.2, 9.4, 9.4, 2.6); x.fill();
+    x.fillStyle = '#' + cc; rr(x, tx, ty, 7, 7, 1.8); x.fill();
+  });
+  return c;
+}
+function addPinImage(id) {
+  if (!id.startsWith('p-') || map.hasImage(id)) return;
+  const c = drawPin(id.slice(2).split('-'));
+  map.addImage(id, c.getContext('2d').getImageData(0, 0, c.width, c.height), { pixelRatio: PR });
+}
+(function logo() {
+  const x = $('#logo').getContext('2d'); x.fillStyle = '#fff';
+  ALIEN.forEach((row, j) => { for (let i = 0; i < row.length; i++) if (row[i] === 'X') x.fillRect(i, j, 1, 1); });
+})();
+
+/* ---------------- Rendu de la carte ---------------- */
+function render() {
+  const feats = [], counts = {};
+  for (const id in S.pois) {
+    const p = S.pois[id];
+    for (const t of p.t) counts[t] = (counts[t] || 0) + 1;
+    if (id === sel) continue;
+    if (filter.size && !p.t.some(t => filter.has(t))) continue;
+    const cols = poiColors(p);
+    feats.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { id, i: iconKey(cols), c: '#' + cols[0], n: p.n } });
+  }
+  if (src) src.setData({ type: 'FeatureCollection', features: feats });
+  renderChips(counts);
+}
+function renderChips(counts) {
+  const total = Object.keys(S.pois).length;
+  let h = `<button class="chip all" data-id="" aria-pressed="${!filter.size}">Tout <span>${total}</span></button>`;
+  for (const t of tagList()) {
+    h += `<button class="chip" data-id="${t.id}" style="--c:${esc(t.color)}" aria-pressed="${filter.has(t.id)}"><i class="sw"></i>${esc(t.name)} <span>${counts[t.id] || 0}</span></button>`;
+  }
+  $('#chips').innerHTML = h;
+}
+$('#chips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  filterTouched = true;
+  const id = b.dataset.id;
+  if (!id) filter.clear(); else if (filter.has(id)) filter.delete(id); else filter.add(id);
+  render();
+});
+function applyDefaultFilter() {
+  if (filterTouched || filter.size) return;
+  const t = tagByNorm(DEFAULT_TAG);
+  if (t) filter.add(t.id);
+}
+
+/* ---------------- Initialisation de la carte ---------------- */
+function initMap() {
+  const view = LS.get('view', { c: [2.3488, 48.8534], z: 12 });
+  map = new maplibregl.Map({
+    container: 'map', style: STYLE_URL, center: view.c, zoom: view.z,
+    attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false, touchPitch: false,
+    maxPitch: 0, fadeDuration: 0, renderWorldCopies: true
+  });
+  map.touchZoomRotate.disableRotation();
+  map.keyboard.disableRotation();
+  map.on('styleimagemissing', e => addPinImage(e.id));
+  map.on('moveend', () => LS.set('view', { c: map.getCenter().toArray().map(v => r6(v)), z: Math.round(map.getZoom() * 100) / 100 }));
+  map.on('load', onMapLoad);
+  map.on('click', onMapClick);
+  map.on('mouseenter', 'poi-pins', () => map.getCanvas().style.cursor = 'pointer');
+  map.on('mouseleave', 'poi-pins', () => map.getCanvas().style.cursor = '');
+  map.on('mouseenter', 'poi-dots', () => map.getCanvas().style.cursor = 'pointer');
+  map.on('mouseleave', 'poi-dots', () => map.getCanvas().style.cursor = '');
+  setupLongPress();
+}
+
+async function onMapLoad() {
+  const st = await window.__stateP;
+  if (st && st.pois) S = { tags: st.tags || {}, pois: st.pois || {}, del: st.del || {} };
+  const firstSym = (map.getStyle().layers.find(l => l.type === 'symbol') || {}).id;
+  map.addSource('sat', { type: 'raster', tiles: [SAT_TILES], tileSize: 256, maxzoom: 19,
+    attribution: 'Imagerie © Esri, Maxar, Earthstar Geographics' });
+  map.addLayer({ id: 'sat', type: 'raster', source: 'sat', layout: { visibility: LS.get('sat', false) ? 'visible' : 'none' } }, firstSym);
+  map.addSource('pois', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, buffer: 32 });
+  map.addLayer({ id: 'poi-dots', type: 'circle', source: 'pois', maxzoom: ZPIN, paint: {
+    'circle-color': ['get', 'c'],
+    'circle-radius': ['interpolate', ['linear'], ['zoom'], 2, 2.6, 8, 4, ZPIN, 6],
+    'circle-stroke-color': '#fff', 'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 2, .6, ZPIN, 1.6] } });
+  map.addLayer({ id: 'poi-pins', type: 'symbol', source: 'pois', minzoom: ZPIN, layout: {
+    'icon-image': ['get', 'i'], 'icon-anchor': 'bottom', 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+    'icon-size': ['interpolate', ['linear'], ['zoom'], ZPIN, .72, 15, 1] } });
+  map.addLayer({ id: 'poi-labels', type: 'symbol', source: 'pois', minzoom: 16, layout: {
+    'text-field': ['get', 'n'], 'text-font': ['Noto Sans Bold'], 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, .25], 'text-optional': true },
+    paint: { 'text-color': '#17203A', 'text-halo-color': '#fff', 'text-halo-width': 1.6 } });
+  src = map.getSource('pois');
+  $('#btnSat').setAttribute('aria-pressed', LS.get('sat', false));
+  applyDefaultFilter();
+  render();
+  const act = $('#chips .chip[aria-pressed="true"]'); if (act) act.scrollIntoView({ inline: 'center', block: 'nearest' });
+  if (!Object.keys(S.pois).length && !SYNC.cfg) openWelcome();
+  else if (!LS.get('hint', false)) { toast('Astuce : appui long sur la carte pour ajouter un POI'); LS.set('hint', true); }
+  setTimeout(() => syncNow(), 400);
+}
+
+function pick(pt) {
+  const layers = ['poi-pins', 'poi-dots'].filter(l => map.getLayer(l));
+  const fs = map.queryRenderedFeatures([[pt.x - 16, pt.y - 34], [pt.x + 16, pt.y + 16]], { layers });
+  let best = null, bd = Infinity;
+  for (const f of fs) {
+    const p = map.project(f.geometry.coordinates);
+    const dy = f.layer.id === 'poi-pins' ? p.y - 16 : p.y;
+    const d = Math.hypot(p.x - pt.x, dy - pt.y);
+    if (d < bd) { bd = d; best = f; }
+  }
+  return best;
+}
+let suppressClick = 0;
+function onMapClick(e) {
+  if (now() < suppressClick) return;
+  if (e.originalEvent && e.originalEvent.target.closest && e.originalEvent.target.closest('.selpin,.maplibregl-marker')) return;
+  const f = pick(e.point);
+  if (f) selectPoi(f.properties.id);
+  else if (!$('#sheet').hidden && !$('#sheet').classList.contains('tall')) closeSheet();
+}
+
+/* ---------------- Appui long : ajouter un POI ---------------- */
+function setupLongPress() {
+  const cont = map.getCanvasContainer();
+  let lp = null, lastFire = 0, lastTouch = 0;
+  const cancel = () => { if (lp) { clearTimeout(lp.t); lp = null; } };
+  const start = (x, y) => { cancel(); lp = { x, y, t: setTimeout(() => { fire(x, y); lp = null; }, 520) }; };
+  const fire = (x, y) => {
+    if (now() - lastFire < 800) return;
+    lastFire = now(); suppressClick = now() + 700;
+    const r = cont.getBoundingClientRect();
+    const ll = map.unproject([x - r.left, y - r.top]);
+    const d = document.createElement('div'); d.className = 'ripple'; d.style.left = x + 'px'; d.style.top = y + 'px';
+    document.body.appendChild(d); setTimeout(() => d.remove(), 600);
+    if (navigator.vibrate) navigator.vibrate(15);
+    openNewPoi(ll);
+  };
+  const onMarker = t => t.closest && t.closest('.maplibregl-marker');
+  cont.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1 || onMarker(e.target)) return cancel();
+    lastTouch = now(); start(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  cont.addEventListener('touchmove', e => {
+    if (lp && (e.touches.length !== 1 || Math.hypot(e.touches[0].clientX - lp.x, e.touches[0].clientY - lp.y) > 10)) cancel();
+  }, { passive: true });
+  cont.addEventListener('touchend', cancel); cont.addEventListener('touchcancel', cancel);
+  cont.addEventListener('touchend', () => lastTouch = now(), { passive: true });
+  cont.addEventListener('mousedown', e => { if (e.button === 0 && !onMarker(e.target) && now() - lastTouch > 900) start(e.clientX, e.clientY); });
+  window.addEventListener('mousemove', e => { if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 6) cancel(); });
+  window.addEventListener('mouseup', cancel);
+  cont.addEventListener('contextmenu', e => { e.preventDefault(); if (!onMarker(e.target)) fire(e.clientX, e.clientY); });
+  map.on('movestart', e => { if (e.originalEvent) cancel(); });
+}
+
+/* ---------------- Épingle sélectionnée, déplaçable ---------------- */
+let selMarker = null, draftMarker = null;
+function pinElement(cols) {
+  const el = document.createElement('div'); el.className = 'selpin';
+  const inner = document.createElement('div'); inner.className = 'in';
+  inner.appendChild(drawPin(cols)); el.appendChild(inner);
+  return el;
+}
+function clearSelMarker() { if (selMarker) { selMarker.remove(); selMarker = null; } }
+function placeSelMarker() {
+  clearSelMarker();
+  const p = S.pois[sel]; if (!p) return;
+  const el = pinElement(poiColors(p));
+  selMarker = new maplibregl.Marker({ element: el, anchor: 'bottom', draggable: true, offset: [0, 2] }).setLngLat([p.lng, p.lat]).addTo(map);
+  selMarker.on('dragstart', () => el.classList.add('lift'));
+  selMarker.on('dragend', () => {
+    el.classList.remove('lift');
+    const ll = selMarker.getLngLat(), q = S.pois[sel]; if (!q) return;
+    const before = { lat: q.lat, lng: q.lng };
+    q.lat = r6(ll.lat); q.lng = r6(ll.lng); q.u = now(); commit(); refreshPoiSheet();
+    toast('POI déplacé', 'Annuler', () => {
+      const z = S.pois[q.id]; if (!z) return;
+      z.lat = before.lat; z.lng = before.lng; z.u = now(); commit();
+      if (sel === z.id) { placeSelMarker(); refreshPoiSheet(); }
+    });
+  });
+}
+function selectPoi(id, fly) {
+  const p = S.pois[id]; if (!p) return;
+  removeDraft();
+  sel = id; render(); placeSelMarker(); openPoiSheet();
+  if (fly) map.flyTo({ center: [p.lng, p.lat], zoom: Math.max(map.getZoom(), 16), padding: sheetPadding(), duration: 900 });
+  else ensureVisible([p.lng, p.lat]);
+}
+function deselect() { if (sel) { sel = null; clearSelMarker(); render(); } }
+function sheetPadding() {
+  const sh = $('#sheet'); const wide = innerWidth >= 760;
+  return wide ? { left: sh.hidden ? 0 : 400, top: 120, right: 0, bottom: 0 } : { bottom: sh.hidden ? 0 : Math.min(sh.offsetHeight, innerHeight * .6), top: 120, left: 0, right: 0 };
+}
+function ensureVisible(ll) {
+  requestAnimationFrame(() => {
+    const p = map.project(ll), pad = sheetPadding();
+    const visible = p.x > pad.left + 30 && p.x < innerWidth - 30 && p.y > pad.top + 40 && p.y < innerHeight - pad.bottom - 10;
+    if (!visible) map.easeTo({ center: ll, padding: pad, duration: 400 });
+  });
+}
+
+/* ---------------- Panneau ---------------- */
+const sheet = $('#sheet');
+let sheetMode = null;
+function openSheet(html, mode, tall) {
+  sheetMode = mode;
+  sheet.classList.toggle('tall', !!tall);
+  sheet.innerHTML = '<div class="grab"></div>' + html;
+  sheet.hidden = false; sheet.scrollTop = 0;
+  document.body.classList.toggle('sheet-open', innerWidth < 760);
+}
+function closeSheet() {
+  sheet.hidden = true; sheet.innerHTML = ''; sheetMode = null; document.body.classList.remove('sheet-open');
+  deselect(); removeDraft();
+}
+function tagPicker(selected) {
+  return '<div class="tagpick">' + tagList().map(t =>
+    `<button class="tchip" data-tag="${t.id}" style="--c:${esc(t.color)}" aria-pressed="${selected.includes(t.id)}"><i class="sw"></i>${esc(t.name)}</button>`
+  ).join('') + (tagList().length ? '' : '<p class="meta">Aucun tag. Crée-en dans les réglages.</p>') + '</div>';
+}
+function dirUrl(p, mode) {
+  const prov = LS.get('dir', 'apple');
+  if (prov === 'google') return `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=${mode === 'w' ? 'walking' : 'driving'}`;
+  return `https://maps.apple.com/?daddr=${p.lat},${p.lng}&dirflg=${mode}`;
+}
+function openPoiSheet() {
+  const p = S.pois[sel]; if (!p) return closeSheet();
+  openSheet(`
+    <div class="sh-head">
+      <div class="title">
+        <input class="name-in" id="pName" value="${esc(p.n)}" aria-label="Nom du POI" enterkeyhint="done">
+        <p class="meta">${p.a ? esc(p.a) + '<br>' : ''}<button id="pCoords" title="Copier les coordonnées">${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</button></p>
+      </div>
+      <button class="close" id="shClose" aria-label="Fermer">${ICONS.close}</button>
+    </div>
+    ${tagPicker(p.t)}
+    <div class="row">
+      <a class="btn" target="_blank" rel="noopener" href="${dirUrl(p, 'w')}">${ICONS.walk}À pied</a>
+      <a class="btn" target="_blank" rel="noopener" href="${dirUrl(p, 'd')}">${ICONS.car}En voiture</a>
+    </div>
+    <div class="foot"><span>Fais glisser l'épingle pour la déplacer.</span><button class="btn danger" id="pDel">${ICONS.trash}Supprimer</button></div>
+  `, 'poi');
+  $('#pName').addEventListener('change', e => {
+    const q = S.pois[sel]; const v = e.target.value.trim(); if (!q || !v || v === q.n) return;
+    q.n = v; q.u = now(); commit();
+  });
+  $('#pName').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+  $('#pCoords').onclick = () => { navigator.clipboard && navigator.clipboard.writeText(`${p.lat}, ${p.lng}`).then(() => toast('Coordonnées copiées')); };
+  sheet.querySelectorAll('.tchip').forEach(b => b.onclick = () => {
+    const q = S.pois[sel]; if (!q) return;
+    const id = b.dataset.tag, i = q.t.indexOf(id);
+    if (i >= 0) q.t.splice(i, 1); else q.t.push(id);
+    q.u = now(); b.setAttribute('aria-pressed', i < 0); commit(); placeSelMarker();
+  });
+  $('#pDel').onclick = () => {
+    const q = S.pois[sel]; if (!q) return;
+    const copy = JSON.parse(JSON.stringify(q));
+    delete S.pois[q.id]; S.del[q.id] = now(); sel = null; closeSheet(); commit();
+    toast(`« ${copy.n} » supprimé`, 'Annuler', () => { copy.u = now(); delete S.del[copy.id]; S.pois[copy.id] = copy; commit(); });
+  };
+  $('#shClose').onclick = closeSheet;
+}
+function refreshPoiSheet() {
+  if (sheetMode !== 'poi') return;
+  if (document.activeElement && sheet.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  if (!S.pois[sel]) return closeSheet();
+  openPoiSheet();
+}
+
+/* ---------------- Nouveau POI ---------------- */
+function removeDraft() { if (draftMarker) { draftMarker.remove(); draftMarker = null; } }
+function openNewPoi(ll) {
+  deselect(); removeDraft();
+  const chosen = filter.size === 1 ? [...filter] : [];
+  const draft = { lat: r6(ll.lat), lng: r6(ll.lng), t: chosen, a: '' };
+  const colsOf = () => poiColors({ t: draft.t });
+  draftMarker = new maplibregl.Marker({ element: pinElement(colsOf()), anchor: 'bottom', draggable: true, offset: [0, 2] }).setLngLat(ll).addTo(map);
+  draftMarker.on('dragend', () => { const v = draftMarker.getLngLat(); draft.lat = r6(v.lat); draft.lng = r6(v.lng); });
+  const near = nearestPrefix(draft);
+  openSheet(`
+    <div class="sh-head">
+      <div class="title">
+        <input class="name-in" id="nName" value="${esc(near)}" placeholder="Nom du POI" aria-label="Nom du nouveau POI" enterkeyhint="done">
+        <p class="meta" id="nAddr">${draft.lat.toFixed(5)}, ${draft.lng.toFixed(5)}</p>
+      </div>
+      <button class="close" id="shClose" aria-label="Annuler">${ICONS.close}</button>
+    </div>
+    ${tagPicker(draft.t)}
+    <div class="row"><button class="btn primary" id="nAdd">Ajouter le POI</button></div>
+  `, 'new');
+  ensureVisible([draft.lng, draft.lat]);
+  sheet.querySelectorAll('.tchip').forEach(b => b.onclick = () => {
+    const id = b.dataset.tag, i = draft.t.indexOf(id);
+    if (i >= 0) draft.t.splice(i, 1); else draft.t.push(id);
+    b.setAttribute('aria-pressed', i < 0);
+    const v = draftMarker.getLngLat(); draftMarker.remove();
+    draftMarker = new maplibregl.Marker({ element: pinElement(colsOf()), anchor: 'bottom', draggable: true, offset: [0, 2] }).setLngLat(v).addTo(map);
+    draftMarker.on('dragend', () => { const w = draftMarker.getLngLat(); draft.lat = r6(w.lat); draft.lng = r6(w.lng); });
+  });
+  reverseGeocode(draft.lat, draft.lng).then(a => { if (a && sheetMode === 'new') { draft.a = a; const el = $('#nAddr'); if (el) el.textContent = a; } });
+  const add = () => {
+    const v = $('#nName').value.trim(), name = v && v !== near ? v : (v || 'Nouveau POI');
+    const p = { id: uid(), n: name, a: draft.a, lat: draft.lat, lng: draft.lng, t: draft.t.slice(), u: now() };
+    S.pois[p.id] = p; removeDraft(); commit();
+    selectPoi(p.id);
+    toast(`« ${p.n} » ajouté`);
+  };
+  $('#nAdd').onclick = add;
+  $('#nName').addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+  $('#shClose').onclick = closeSheet;
+  setTimeout(() => { if (innerWidth >= 760) $('#nName') && $('#nName').focus(); }, 50);
+}
+// Suggère le préfixe du POI le plus proche (ex. « PA_ »)
+function nearestPrefix(pt) {
+  let best = null, bd = Infinity;
+  for (const id in S.pois) {
+    const p = S.pois[id], d = (p.lat - pt.lat) ** 2 + (p.lng - pt.lng) ** 2;
+    if (d < bd) { bd = d; best = p; }
+  }
+  if (!best || bd > 0.05) return '';
+  const m = /^([A-Za-z]+[_-])\d+/.exec(best.n);
+  return m ? m[1] : '';
+}
+async function reverseGeocode(lat, lng) {
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lng}&accept-language=fr`);
+    if (!r.ok) return '';
+    const j = await r.json(), a = j.address || {};
+    const street = [a.house_number, a.road || a.pedestrian || a.square].filter(Boolean).join(' ');
+    return [street, [a.postcode, a.city || a.town || a.village || a.municipality].filter(Boolean).join(' '), a.country].filter(Boolean).join(', ') || j.display_name || '';
+  } catch (e) { return ''; }
+}
+
+/* ---------------- Recherche ---------------- */
+const qIn = $('#q'), results = $('#results');
+qIn.addEventListener('input', () => {
+  const q = norm(qIn.value);
+  if (!q) { results.hidden = true; return; }
+  const out = [];
+  for (const id in S.pois) { const p = S.pois[id]; if (norm(p.n).includes(q)) { out.push(p); if (out.length > 40) break; } }
+  out.sort((a, b) => (norm(a.n).startsWith(q) ? 0 : 1) - (norm(b.n).startsWith(q) ? 0 : 1) || a.n.localeCompare(b.n, 'fr', { numeric: true }));
+  results.innerHTML = out.length ? out.slice(0, 8).map(p => `<button data-id="${p.id}"><i class="sw" style="--c:#${poiColors(p)[0]}"></i><div style="min-width:0"><b>${esc(p.n)}</b><small>${esc(p.a || p.t.map(t => S.tags[t] && S.tags[t].name).filter(Boolean).join(', '))}</small></div></button>`).join('')
+    : '<div class="empty">Aucun POI ne porte ce nom.</div>';
+  results.hidden = false;
+});
+results.addEventListener('click', e => {
+  const b = e.target.closest('button[data-id]'); if (!b) return;
+  qIn.value = ''; results.hidden = true; qIn.blur();
+  selectPoi(b.dataset.id, true);
+});
+qIn.addEventListener('keydown', e => { if (e.key === 'Enter') { const b = results.querySelector('button[data-id]'); if (b) b.click(); } if (e.key === 'Escape') { qIn.value = ''; results.hidden = true; } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sheet.hidden && document.activeElement === document.body) closeSheet(); });
+
+/* ---------------- Satellite & position ---------------- */
+$('#btnSat').onclick = () => {
+  if (!map.getLayer('sat')) return;
+  const on = map.getLayoutProperty('sat', 'visibility') !== 'visible';
+  map.setLayoutProperty('sat', 'visibility', on ? 'visible' : 'none');
+  $('#btnSat').setAttribute('aria-pressed', on); LS.set('sat', on);
+};
+let watchId = null, meMarker = null, firstFix = false;
+$('#btnLocate').onclick = () => {
+  const b = $('#btnLocate');
+  if (watchId != null) {
+    if (meMarker && b.getAttribute('aria-pressed') === 'true') {
+      // second appui : arrêter
+      navigator.geolocation.clearWatch(watchId); watchId = null; meMarker.remove(); meMarker = null; b.setAttribute('aria-pressed', false); return;
+    }
+  }
+  if (!navigator.geolocation) return toast('La localisation n\'est pas disponible sur cet appareil');
+  b.setAttribute('aria-pressed', true); firstFix = true;
+  watchId = navigator.geolocation.watchPosition(pos => {
+    const ll = [pos.coords.longitude, pos.coords.latitude];
+    if (!meMarker) { const el = document.createElement('div'); el.className = 'me'; meMarker = new maplibregl.Marker({ element: el }).setLngLat(ll).addTo(map); }
+    else meMarker.setLngLat(ll);
+    if (firstFix) { firstFix = false; map.flyTo({ center: ll, zoom: Math.max(map.getZoom(), 15), duration: 900 }); }
+  }, err => {
+    b.setAttribute('aria-pressed', false); navigator.geolocation.clearWatch(watchId); watchId = null;
+    toast(err.code === 1 ? 'Localisation refusée : autorise-la dans les réglages de Safari' : 'Position introuvable pour le moment');
+  }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 });
+};
+
+/* ---------------- Toast ---------------- */
+function toast(msg, action, fn, ms = 4500) {
+  const t = $('#toast');
+  t.innerHTML = `<span>${esc(msg)}</span>` + (action ? `<button>${esc(action)}</button>` : '');
+  t.hidden = false;
+  if (action) t.querySelector('button').onclick = () => { t.hidden = true; fn(); };
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, ms);
+}
+
+/* ---------------- Format des données, fusion ---------------- */
+function serialize(st) {
+  const tags = Object.values(st.tags).sort(byId).map(t => [t.id, t.name, t.color, t.o, t.u]);
+  const pois = Object.values(st.pois).sort(byId).map(p => [p.id, p.n, r6(p.lat), r6(p.lng), p.t.slice().sort(), p.a || '', p.u]);
+  const del = Object.keys(st.del).sort().map(k => [k, st.del[k]]);
+  return JSON.stringify({ app: 'flashmap', v: 1, tags, pois, del });
+}
+function parseData(text) {
+  const j = JSON.parse(text);
+  if (j.app !== 'flashmap') throw new Error('Ce fichier n\'est pas une sauvegarde Flashmap');
+  const st = { tags: {}, pois: {}, del: {} };
+  for (const [id, name, color, o, u] of j.tags || []) st.tags[id] = { id, name, color, o, u };
+  for (const [id, n, lat, lng, t, a, u] of j.pois || []) st.pois[id] = { id, n, lat, lng, t, a, u };
+  for (const [k, v] of j.del || []) st.del[k] = v;
+  return st;
+}
+function mergeStates(A, B) {
+  const del = Object.assign({}, A.del);
+  for (const k in B.del) del[k] = Math.max(del[k] || 0, B.del[k]);
+  const pickNewest = (a, b) => {
+    const out = Object.assign({}, a);
+    for (const id in b) if (!out[id] || b[id].u > out[id].u) out[id] = b[id];
+    for (const id in out) if (del[id] && del[id] >= out[id].u) delete out[id];
+    return out;
+  };
+  return { tags: pickNewest(A.tags, B.tags), pois: pickNewest(A.pois, B.pois), del };
+}
+
+/* ---------------- Synchronisation GitHub ---------------- */
+const SYNC = { cfg: LS.get('gh', null), busy: false, again: false, timer: null, status: 'off', msg: '' };
+function setSync(st, msg) {
+  SYNC.status = st; SYNC.msg = msg || '';
+  $('#syncDot').dataset.s = SYNC.cfg ? st : 'off';
+  if (sheetMode === 'settings') renderSyncStatus();
+}
+function scheduleSync(delay = 2500) {
+  if (!SYNC.cfg) return;
+  setSync('pending');
+  clearTimeout(SYNC.timer); SYNC.timer = setTimeout(syncNow, delay);
+}
+function ghErr(code) {
+  return ({ 401: 'Token refusé : il est incorrect ou a expiré.', 403: 'Accès refusé : le token doit avoir la permission « Contents : Read and write ».',
+    404: 'Dépôt introuvable : vérifie le nom d\'utilisateur, le nom du dépôt et l\'accès du token.' })[code] || ('Erreur GitHub ' + code);
+}
+function gh(opt = {}) {
+  const c = SYNC.cfg;
+  return fetch(`https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/contents/${DATA_FILE}`, Object.assign({}, opt, {
+    cache: 'no-store', headers: Object.assign({ Authorization: 'Bearer ' + c.token, 'X-GitHub-Api-Version': '2022-11-28' }, opt.headers || {})
+  }));
+}
+function b64enc(str) {
+  const bytes = new TextEncoder().encode(str); let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function b64dec(b) {
+  const bin = atob(b.replace(/\s/g, '')), u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(u);
+}
+async function ghGet() {
+  const res = await gh({ headers: { Accept: 'application/vnd.github+json' } });
+  if (res.status === 404) {
+    // fichier absent (premier usage) ou dépôt inaccessible : on vérifie le dépôt
+    const c = SYNC.cfg;
+    const rr = await fetch(`https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}`, { cache: 'no-store', headers: { Authorization: 'Bearer ' + c.token } });
+    if (!rr.ok) throw new Error(ghErr(rr.status));
+    return { sha: null, text: null };
+  }
+  if (!res.ok) throw new Error(ghErr(res.status));
+  const j = await res.json();
+  if (j.encoding === 'base64' && j.content) return { sha: j.sha, text: b64dec(j.content) };
+  const r2 = await gh({ headers: { Accept: 'application/vnd.github.raw+json' } });   // fichier > 1 Mo
+  if (!r2.ok) throw new Error(ghErr(r2.status));
+  return { sha: j.sha, text: await r2.text() };
+}
+async function ghPut(text, sha) {
+  const body = { message: 'Flashmap · ' + new Date().toISOString(), content: b64enc(text) };
+  if (sha) body.sha = sha;
+  const res = await gh({ method: 'PUT', headers: { Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (res.status === 409 || res.status === 422) return 'conflict';
+  if (!res.ok) throw new Error(ghErr(res.status));
+  return 'ok';
+}
+async function syncNow() {
+  if (!SYNC.cfg) return;
+  if (SYNC.busy) { SYNC.again = true; return; }
+  if (!navigator.onLine) { setSync('pending', 'Hors ligne : synchronisation au retour du réseau.'); return; }
+  SYNC.busy = true; setSync('busy');
+  try {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const r = await ghGet();
+      const remote = r.text ? parseData(r.text) : { tags: {}, pois: {}, del: {} };
+      const merged = mergeStates(S, remote);
+      const mergedTxt = serialize(merged);
+      if (mergedTxt !== serialize(S)) {
+        S = merged; saveLocal(); applyDefaultFilter(); render();
+        if (sel && !S.pois[sel]) closeSheet(); else if (sel) { placeSelMarker(); refreshPoiSheet(); }
+      }
+      if (!r.text || mergedTxt !== serialize(remote)) {
+        if (await ghPut(mergedTxt, r.sha) === 'conflict') { await sleep(500 + attempt * 700); continue; }
+      }
+      LS.set('lastSync', now()); setSync('ok');
+      break;
+    }
+  } catch (e) {
+    console.warn(e); setSync('error', e.message || 'Synchronisation impossible');
+  }
+  SYNC.busy = false;
+  if (SYNC.again) { SYNC.again = false; scheduleSync(600); }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
+window.addEventListener('online', () => syncNow());
+
+/* ---------------- Import / export ---------------- */
+function normColor(c) { return /^#?[0-9a-f]{6}$/i.test(c || '') ? '#' + hex(c) : null; }
+function importGeoJSON(j) {
+  const feats = j.type === 'FeatureCollection' ? j.features : (j.type === 'Feature' ? [j] : []);
+  if (!feats.length) throw new Error('Aucun point trouvé dans ce fichier');
+  const tagIdx = {}; Object.values(S.tags).forEach(t => tagIdx[norm(t.name)] = t);
+  const existing = {}; Object.values(S.pois).forEach(p => existing[norm(p.n) + '|' + p.lat.toFixed(4) + '|' + p.lng.toFixed(4)] = p);
+  let added = 0, updated = 0, skipped = 0, ord = Object.values(S.tags).reduce((m, t) => Math.max(m, t.o + 1), 0);
+  const T = now();
+  for (const f of feats) {
+    const g = f && f.geometry;
+    if (!g || g.type !== 'Point' || !isFinite(g.coordinates[0]) || !isFinite(g.coordinates[1])) { skipped++; continue; }
+    const [lng, lat] = g.coordinates, pr = f.properties || {};
+    const name = (pr.name || pr.title || 'Sans nom').toString().trim();
+    let tl = pr.tags || []; if (typeof tl === 'string') tl = tl.split(/[,;]/);
+    const tids = [];
+    for (const tg of tl) {
+      const nm = (typeof tg === 'string' ? tg : (tg && tg.name) || '').trim(); if (!nm) continue;
+      let t = tagIdx[norm(nm)];
+      if (!t) {
+        const k = norm(nm);
+        t = { id: uid(), name: nm, color: normColor(tg.color) || PALETTE[ord % PALETTE.length], o: k in KNOWN_ORDER ? KNOWN_ORDER[k] : 10 + ord, u: T };
+        ord++; S.tags[t.id] = t; tagIdx[k] = t;
+      }
+      if (!tids.includes(t.id)) tids.push(t.id);
+    }
+    const key = norm(name) + '|' + lat.toFixed(4) + '|' + lng.toFixed(4), ex = existing[key];
+    if (ex) {
+      let ch = false;
+      for (const id of tids) if (!ex.t.includes(id)) { ex.t.push(id); ch = true; }
+      if (!ex.a && pr.address) { ex.a = pr.address.toString(); ch = true; }
+      if (ch) { ex.u = T; updated++; } else skipped++;
+      continue;
+    }
+    const p = { id: uid(), n: name, a: (pr.address || '').toString(), lat: r6(lat), lng: r6(lng), t: tids, u: T };
+    S.pois[p.id] = p; existing[key] = p; added++;
+  }
+  // ordre des tags normalisé (0, 1, 2…)
+  tagList().forEach((t, i) => { if (t.o !== i) { t.o = i; t.u = T; } });
+  return { added, updated, skipped };
+}
+$('#fileIn').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const text = await f.text(), j = JSON.parse(text);
+    if (j.app === 'flashmap') {
+      const before = Object.keys(S.pois).length;
+      S = mergeStates(S, parseData(text));
+      commit(); toast(`Sauvegarde fusionnée : ${Object.keys(S.pois).length - before} POI ajoutés`);
+    } else {
+      const r = importGeoJSON(j);
+      applyDefaultFilter(); commit();
+      toast(`${r.added} POI importés` + (r.updated ? `, ${r.updated} mis à jour` : '') + (r.skipped ? `, ${r.skipped} déjà présents` : ''), null, null, 6000);
+      if (r.added) fitTo(Object.values(S.pois).filter(p => !filter.size || p.t.some(t => filter.has(t))));
+    }
+    if (sheetMode === 'settings' || sheetMode === 'welcome') closeSheet();
+  } catch (err) {
+    toast('Import impossible : ' + (err.message || 'fichier illisible'), null, null, 7000);
+  }
+});
+function fitTo(list) {
+  if (!list.length) return;
+  let w = 180, s = 90, e = -180, n = -90;
+  for (const p of list) { w = Math.min(w, p.lng); e = Math.max(e, p.lng); s = Math.min(s, p.lat); n = Math.max(n, p.lat); }
+  map.fitBounds([[w, s], [e, n]], { padding: 80, maxZoom: 15, duration: 800 });
+}
+async function saveFile(filename, text, type) {
+  const blob = new Blob([text], { type });
+  try {
+    const file = new File([blob], filename, { type });
+    if (/iPhone|iPad|iPod/.test(navigator.userAgent) && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] }); return;
+    }
+  } catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+function exportGeoJSON() {
+  const features = Object.values(S.pois).map(p => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
+    properties: { name: p.n, address: p.a || '', tags: p.t.map(id => S.tags[id]).filter(Boolean).map(t => ({ name: t.name, color: t.color })) } }));
+  saveFile(`flashmap-${new Date().toISOString().slice(0, 10)}.geojson`, JSON.stringify({ type: 'FeatureCollection', features }), 'application/geo+json');
+}
+function exportBackup() { saveFile(`flashmap-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`, serialize(S), 'application/json'); }
+function exportCSV() {
+  const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const rows = [['name', 'latitude', 'longitude', 'address', 'tags'].join(',')].concat(
+    Object.values(S.pois).map(p => [q(p.n), p.lat, p.lng, q(p.a), q(p.t.map(id => S.tags[id] && S.tags[id].name).filter(Boolean).join(', '))].join(',')));
+  saveFile(`flashmap-${new Date().toISOString().slice(0, 10)}.csv`, '\ufeff' + rows.join('\r\n'), 'text/csv');
+}
+
+/* ---------------- Bienvenue ---------------- */
+function openWelcome() {
+  openSheet(`
+    <div class="set">
+      <h2>Ta carte est vide</h2>
+      <p>Importe ton fichier Mapstr (.geojson) pour retrouver tous tes POI. Si la synchro est déjà configurée sur un autre appareil, connecte-la : tes POI arriveront tout seuls.</p>
+      <div class="stack">
+        <button class="btn primary" id="wImport">Importer un fichier</button>
+        <button class="btn" id="wSync">Connecter la synchro</button>
+      </div>
+      <p style="margin-top:14px">Ensuite : appui long sur la carte pour ajouter un POI.</p>
+    </div>`, 'welcome');
+  $('#wImport').onclick = () => $('#fileIn').click();
+  $('#wSync').onclick = () => openSettings(true);
+}
+
+/* ---------------- Réglages ---------------- */
+function ago(t) {
+  if (!t) return 'jamais';
+  const s = Math.round((now() - t) / 1000);
+  if (s < 60) return 'à l\'instant'; if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
+  if (s < 86400) return `il y a ${Math.round(s / 3600)} h`; return new Date(t).toLocaleDateString('fr-FR');
+}
+function renderSyncStatus() {
+  const el = $('#syncStatus'); if (!el) return;
+  let txt, err = false;
+  if (!SYNC.cfg) txt = 'Synchro non configurée. Les données restent sur cet appareil.';
+  else if (SYNC.status === 'error') { txt = SYNC.msg; err = true; }
+  else if (SYNC.status === 'busy') txt = 'Synchronisation…';
+  else if (SYNC.status === 'pending') txt = SYNC.msg || 'Modifications en attente d\'envoi…';
+  else txt = `Synchronisé ${ago(LS.get('lastSync', 0))} avec ${SYNC.cfg.owner}/${SYNC.cfg.repo}`;
+  el.textContent = txt; el.classList.toggle('err', err);
+}
+function openSettings(focusSync) {
+  deselect(); removeDraft();
+  const counts = {}; for (const id in S.pois) for (const t of S.pois[id].t) counts[t] = (counts[t] || 0) + 1;
+  const tags = tagList();
+  const c = SYNC.cfg || {};
+  const dir = LS.get('dir', 'apple');
+  openSheet(`
+    <div class="set">
+      <div class="sh-head"><h2 class="title">Réglages</h2><button class="close" id="shClose" aria-label="Fermer">${ICONS.close}</button></div>
+
+      <h3>Tags</h3>
+      <p>L'ordre compte : un POI qui a plusieurs tags prend la couleur du premier tag de la liste. Les autres apparaissent en petits carreaux sur l'épingle.</p>
+      <div id="tagRows">${tags.map((t, i) => `
+        <div class="tagrow" data-id="${t.id}">
+          <input type="color" value="${esc(t.color)}" aria-label="Couleur du tag ${esc(t.name)}">
+          <input type="text" value="${esc(t.name)}" aria-label="Nom du tag">
+          <small>${counts[t.id] || 0}</small>
+          <button class="mini up" aria-label="Monter" ${i === 0 ? 'disabled' : ''}>${ICONS.up}</button>
+          <button class="mini down" aria-label="Descendre" ${i === tags.length - 1 ? 'disabled' : ''}>${ICONS.down}</button>
+          <button class="mini del" aria-label="Supprimer le tag">${ICONS.trash}</button>
+        </div>`).join('')}</div>
+      <div class="add-tag"><input id="newTag" placeholder="Nouveau tag" enterkeyhint="done"><button class="btn primary" id="addTag">Créer</button></div>
+
+      <h3 id="syncH">Synchronisation iPhone ↔ Mac</h3>
+      <p>Tes POI sont enregistrés dans un dépôt GitHub privé. Saisis les mêmes informations sur chaque appareil.</p>
+      <div class="status" id="syncStatus"></div>
+      ${SYNC.cfg ? `
+        <div class="row"><button class="btn primary" id="syncNowBtn">Synchroniser maintenant</button><button class="btn" id="syncOff">Déconnecter</button></div>` : `
+        <label class="field"><span>Nom d'utilisateur GitHub</span><input id="ghOwner" value="${esc(c.owner || '')}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        <label class="field"><span>Dépôt privé</span><input id="ghRepo" value="${esc(c.repo || 'flashmap-data')}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        <label class="field"><span>Token d'accès</span><input id="ghToken" type="password" autocomplete="off" placeholder="github_pat_…"></label>
+        <button class="btn primary" id="syncOn" style="width:100%">Connecter la synchro</button>`}
+
+      <h3>Itinéraires</h3>
+      <div class="seg" id="dirSeg">
+        <button data-v="apple" aria-pressed="${dir === 'apple'}">Plans (Apple)</button>
+        <button data-v="google" aria-pressed="${dir === 'google'}">Google Maps</button>
+      </div>
+
+      <h3>Données</h3>
+      <p>${Object.keys(S.pois).length} POI et ${tags.length} tags sur cet appareil.</p>
+      <div class="stack">
+        <button class="btn" id="impBtn">Importer un fichier (GeoJSON Mapstr ou sauvegarde)</button>
+        <div class="row"><button class="btn" id="expGeo">Exporter en GeoJSON</button><button class="btn" id="expCsv">Exporter en CSV</button></div>
+        <button class="btn" id="expBak">Exporter une sauvegarde complète</button>
+      </div>
+    </div>`, 'settings', true);
+  renderSyncStatus();
+  $('#shClose').onclick = closeSheet;
+  if (focusSync) setTimeout(() => $('#syncH').scrollIntoView({ behavior: 'smooth' }), 50);
+
+  // Tags
+  $('#tagRows').addEventListener('change', e => {
+    const row = e.target.closest('.tagrow'); const t = row && S.tags[row.dataset.id]; if (!t) return;
+    if (e.target.type === 'color') { t.color = e.target.value; }
+    else { const v = e.target.value.trim(); if (!v) { e.target.value = t.name; return; } t.name = v; }
+    t.u = now(); commit();
+  });
+  $('#tagRows').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const row = b.closest('.tagrow'), list = tagList(), i = list.findIndex(t => t.id === row.dataset.id), t = list[i];
+    if (b.classList.contains('del')) {
+      const n = counts[t.id] || 0;
+      if (!confirm(`Supprimer le tag « ${t.name} » ?` + (n ? ` Il sera retiré de ${n} POI.` : ''))) return;
+      const T = now();
+      for (const id in S.pois) { const p = S.pois[id], k = p.t.indexOf(t.id); if (k >= 0) { p.t.splice(k, 1); p.u = T; } }
+      delete S.tags[t.id]; S.del[t.id] = T; filter.delete(t.id);
+    } else {
+      const j = b.classList.contains('up') ? i - 1 : i + 1; if (j < 0 || j >= list.length) return;
+      [list[i], list[j]] = [list[j], list[i]];
+      const T = now(); list.forEach((x, k) => { if (x.o !== k) { x.o = k; x.u = T; } });
+    }
+    commit(); const st = sheet.scrollTop; openSettings(); sheet.scrollTop = st;
+  });
+  const addTag = () => {
+    const v = $('#newTag').value.trim(); if (!v) return;
+    if (tagByNorm(v)) return toast('Ce tag existe déjà');
+    const n = Object.keys(S.tags).length;
+    const t = { id: uid(), name: v, color: PALETTE[n % PALETTE.length], o: n, u: now() };
+    S.tags[t.id] = t; commit(); const st = sheet.scrollTop; openSettings(); sheet.scrollTop = st;
+  };
+  $('#addTag').onclick = addTag;
+  $('#newTag').addEventListener('keydown', e => { if (e.key === 'Enter') addTag(); });
+
+  // Synchro
+  if (SYNC.cfg) {
+    $('#syncNowBtn').onclick = () => syncNow();
+    $('#syncOff').onclick = () => {
+      if (!confirm('Déconnecter la synchro sur cet appareil ? Tes POI restent sur l\'appareil et dans GitHub.')) return;
+      SYNC.cfg = null; LS.del('gh'); setSync('off'); openSettings(true);
+    };
+  } else {
+    $('#syncOn').onclick = async () => {
+      const owner = $('#ghOwner').value.trim(), repo = $('#ghRepo').value.trim(), token = $('#ghToken').value.trim();
+      if (!owner || !repo || !token) return toast('Remplis les trois champs');
+      SYNC.cfg = { owner, repo, token }; LS.set('gh', SYNC.cfg);
+      openSettings(true);
+      await syncNow();
+      if (SYNC.status === 'error') { const m = SYNC.msg; SYNC.cfg = null; LS.del('gh'); openSettings(true); setSync('error', m); $('#syncStatus').textContent = m; $('#syncStatus').classList.add('err'); }
+      else { toast('Synchro connectée'); applyDefaultFilter(); render(); }
+    };
+  }
+  $('#dirSeg').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    LS.set('dir', b.dataset.v); $('#dirSeg').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  };
+  $('#impBtn').onclick = () => $('#fileIn').click();
+  $('#expGeo').onclick = exportGeoJSON;
+  $('#expCsv').onclick = exportCSV;
+  $('#expBak').onclick = exportBackup;
+}
+$('#btnSettings').onclick = () => (sheetMode === 'settings' ? closeSheet() : openSettings());
+
+/* ---------------- Démarrage ---------------- */
+setSync(SYNC.cfg ? 'pending' : 'off');
+initMap();
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
